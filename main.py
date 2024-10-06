@@ -1,3 +1,4 @@
+#all imports
 from fastapi import FastAPI, HTTPException, Depends
 from sqlalchemy import create_engine, select, insert, update, delete
 from sqlalchemy.orm import sessionmaker, Session
@@ -6,15 +7,14 @@ from models.models import roles, users, artists, albums, songs
 from datetime import datetime
 from config import DB_USER, DB_PASS, DB_HOST, DB_PORT, DB_NAME 
 from typing import Optional, Dict
-
-from fastapi_users import fastapi_users, FastAPIUsers
+from fastapi_users import fastapi_users, FastAPIUsers, BaseUserManager
 from pydantic import BaseModel, Field
-
+from fastapi_users.db import SQLAlchemyBaseUserTable, SQLAlchemyUserDatabase
 from auth.auth import auth_backend
 from auth.database import User
 from auth.manager import get_user_manager
 from auth.schemas import UserRead, UserCreate, UserUpdate
-from bcrypt import hashpw, gensalt
+from bcrypt import checkpw, hashpw, gensalt
 
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
@@ -159,6 +159,20 @@ class SongUpdate(BaseModel):
     artist_id: Optional[int] = None
 
 
+class UserManager(BaseUserManager[User, int]):
+    async def get_by_email(self, email: str):
+        return await self.user_db.get_by_email(email)
+
+    async def authenticate(self, email: str, password: str):
+        user = await self.get_by_email(email)
+        if user and checkpw(password.encode('utf-8'), user.hashed_password.encode('utf-8')):
+            return user
+        return None
+
+def get_user_manager(user_db: SQLAlchemyUserDatabase):
+    return UserManager(user_db)
+
+
 @app.post("/roles/", response_model=Role)
 def create_role(role: RoleCreate, db: Session = Depends(get_db)):
     stmt = insert(roles).values(
@@ -196,17 +210,16 @@ def update_role(role_id: int, role: RoleCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Role not found")
     return result
 
-
 @app.post("/users/", response_model=User)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
-    # Hash the password using bcrypt
-    hashed_password = hashpw(user.password.encode('utf-8'), gensalt()).decode('utf-8')
+    # Хэширование пароля с использованием bcrypt
+    hashed_password = hashpw(user.hashed_password.encode('utf-8'), gensalt()).decode('utf-8')
     
     stmt = insert(users).values(
         email=user.email,
         username=user.username,
         role_id=user.role_id,
-        hashed_password=hashed_password,  # Use hashed password
+        hashed_password=hashed_password,  # Используйте хэшированный пароль
         is_active=user.is_active,
         is_superuser=user.is_superuser,
         is_verified=user.is_verified
@@ -217,8 +230,6 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     result = db.execute(stmt).fetchone()
     db.commit()
     return result
-
-
 @app.get("/users/", response_model=list[User])
 def get_users(
     db: Session = Depends(get_db), 
